@@ -31,8 +31,20 @@ import java.util.concurrent.TimeUnit;
  */
 public class MetricsService {
 
-   //metrics for whole data flow
-    public Map<String, String> getMetrics(ProcessGroupStatus status) {
+    //processor - specific metrics
+    public Map<String, String> getProcessorMetrics(ProcessorStatus status) {
+        final Map<String, String> metrics = new HashMap<>();
+        metrics.put(MetricNames.FLOW_FILES_RECEIVED, String.valueOf(status.getInputCount()));
+        metrics.put(MetricNames.FLOW_FILES_SENT, String.valueOf(status.getOutputCount()));
+        metrics.put(MetricNames.BYTES_READ, String.valueOf(status.getInputBytes()));
+        metrics.put(MetricNames.BYTES_WRITTEN, String.valueOf(status.getOutputBytes()));
+        metrics.put(MetricNames.ACTIVE_THREADS, String.valueOf(status.getActiveThreadCount()));
+        return metrics;
+    }
+
+
+    //general metrics for whole dataflow
+    public Map<String,String> getDataFlowMetrics(ProcessGroupStatus status) {
         final Map<String, String> metrics = new HashMap<>();
         metrics.put(MetricNames.FLOW_FILES_RECEIVED, String.valueOf(status.getFlowFilesReceived()));
         metrics.put(MetricNames.BYTES_RECEIVED, String.valueOf(status.getBytesReceived()));
@@ -47,14 +59,45 @@ public class MetricsService {
         return metrics;
     }
 
-    //processor - specific metrics
-    public Map<String, String> getProcessorMetrics(ProcessorStatus status){
+        //virtual machine metrics
+    public Map<String, String> getJVMMetrics(VirtualMachineMetrics virtualMachineMetrics) {
         final Map<String, String> metrics = new HashMap<>();
-        metrics.put(MetricNames.FLOW_FILES_RECEIVED, String.valueOf(status.getInputCount()));
-        metrics.put(MetricNames.FLOW_FILES_SENT, String.valueOf(status.getOutputCount()));
-        metrics.put(MetricNames.BYTES_READ, String.valueOf(status.getInputBytes()));
-        metrics.put(MetricNames.BYTES_WRITTEN, String.valueOf(status.getOutputBytes()));
-        metrics.put(MetricNames.ACTIVE_THREADS, String.valueOf(status.getActiveThreadCount()));
+        metrics.put(MetricNames.JVM_UPTIME, String.valueOf(virtualMachineMetrics.uptime()));
+        metrics.put(MetricNames.JVM_HEAP_USED, String.valueOf(virtualMachineMetrics.heapUsed()));
+        metrics.put(MetricNames.JVM_HEAP_USAGE, String.valueOf(virtualMachineMetrics.heapUsage()));
+        metrics.put(MetricNames.JVM_NON_HEAP_USAGE, String.valueOf(virtualMachineMetrics.nonHeapUsage()));
+        metrics.put(MetricNames.JVM_THREAD_COUNT, String.valueOf(virtualMachineMetrics.threadCount()));
+        metrics.put(MetricNames.JVM_DAEMON_THREAD_COUNT, String.valueOf(virtualMachineMetrics.daemonThreadCount()));
+        metrics.put(MetricNames.JVM_FILE_DESCRIPTOR_USAGE, String.valueOf(virtualMachineMetrics.fileDescriptorUsage()));
+
+        for (Map.Entry<Thread.State, Double> entry : virtualMachineMetrics.threadStatePercentages().entrySet()) {
+            final int normalizedValue = (int) (100 * (entry.getValue() == null ? 0 : entry.getValue()));
+            switch (entry.getKey()) {
+                case BLOCKED:
+                    metrics.put(MetricNames.JVM_THREAD_STATES_BLOCKED, String.valueOf(normalizedValue));
+                    break;
+                case RUNNABLE:
+                    metrics.put(MetricNames.JVM_THREAD_STATES_RUNNABLE, String.valueOf(normalizedValue));
+                    break;
+                case TERMINATED:
+                    metrics.put(MetricNames.JVM_THREAD_STATES_TERMINATED, String.valueOf(normalizedValue));
+                    break;
+                case TIMED_WAITING:
+                    metrics.put(MetricNames.JVM_THREAD_STATES_TIMED_WAITING, String.valueOf(normalizedValue));
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        for (Map.Entry<String, VirtualMachineMetrics.GarbageCollectorStats> entry : virtualMachineMetrics.garbageCollectors().entrySet()) {
+            final String gcName = entry.getKey().replace(" ", "");
+            final long runs = entry.getValue().getRuns();
+            final long timeMS = entry.getValue().getTime(TimeUnit.MILLISECONDS);
+            metrics.put(MetricNames.JVM_GC_RUNS + "." + gcName, String.valueOf(runs));
+            metrics.put(MetricNames.JVM_GC_TIME + "." + gcName, String.valueOf(timeMS));
+        }
+
         return metrics;
     }
 

@@ -66,6 +66,4 @@ public class DDMetricRegistryBuilder {
                         .build();
         return reporter;
     }
-
-
 }
