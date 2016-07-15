@@ -57,12 +57,14 @@ public class DDMetricRegistryBuilder {
         return this.metricRegistry;
     }
 
+    //create DataDog reporter
     private DatadogReporter createDatadogReporter(MetricRegistry metricRegistry) throws IOException {
         UdpTransport udpTransport = new UdpTransport.Builder().build();
         DatadogReporter reporter =
                 DatadogReporter.forRegistry(metricRegistry)
                         .withHost(InetAddress.getLocalHost().getHostName())
                         .withTransport(udpTransport)
+                        .withTags(tags)
                         .build();
         return reporter;
     }

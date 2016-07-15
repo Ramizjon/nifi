@@ -38,7 +38,9 @@ public class TestDataDogReportingTask {
     private ConcurrentHashMap<String, AtomicDouble> metricsMap;
     private MetricRegistry metricRegistry;
     private MetricsService metricsService;
-    final String reportingPeriod = "10";
+    private String reportingPeriod = "10";
+    private String env = "dev";
+    private String prefix = "nifi";
     private ReportingContext context;
     private ReportingInitializationContext initContext;
     private ConfigurationContext configurationContext;
@@ -52,11 +54,16 @@ public class TestDataDogReportingTask {
         initContexts();
     }
 
+    //init all contexts
     private void initContexts() {
         configurationContext = Mockito.mock(ConfigurationContext.class);
         context = Mockito.mock(ReportingContext.class);
         Mockito.when(context.getProperty(DataDogReportingTask.REPORTING_PERIOD))
                 .thenReturn(new MockPropertyValue(reportingPeriod, null));
+        Mockito.when(context.getProperty(DataDogReportingTask.ENVIRONMENT))
+                .thenReturn(new MockPropertyValue(env, null));
+        Mockito.when(context.getProperty(DataDogReportingTask.METRICS_PREFIX))
+                .thenReturn(new MockPropertyValue(prefix, null));
         EventAccess eventAccess = Mockito.mock(EventAccess.class);
         Mockito.when(eventAccess.getControllerStatus()).thenReturn(status);
         Mockito.when(context.getEventAccess()).thenReturn(eventAccess);
@@ -72,6 +79,7 @@ public class TestDataDogReportingTask {
 
     }
 
+    //test onTrigger method
     @Test
     public void testOnTrigger() throws InitializationException, IOException {
         DataDogReportingTask dataDogReportingTask = new TestableDataDogReportingTask();
@@ -83,6 +91,8 @@ public class TestDataDogReportingTask {
         verify(metricsService, atLeast(1)).getJVMMetrics(Mockito.<VirtualMachineMetrics>any());
     }
 
+
+    //test updating metrics of processors
     @Test
     public void testUpdateMetricsProcessor() throws InitializationException, IOException {
         MetricsService ms = new MetricsService();
@@ -99,6 +109,7 @@ public class TestDataDogReportingTask {
         verify(metricRegistry).register(eq("nifi.sampleProcessor.FlowFilesSentLast5Minutes"), Mockito.<Gauge>any());
     }
 
+    //test updating JMV metrics
     @Test
     public void testUpdateMetricsJVM() throws InitializationException, IOException {
         MetricsService ms = new MetricsService();
