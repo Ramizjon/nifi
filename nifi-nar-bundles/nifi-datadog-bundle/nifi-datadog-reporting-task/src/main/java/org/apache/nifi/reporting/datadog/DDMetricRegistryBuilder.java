@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.nifi.reporting.datadog;
 
 import com.codahale.metrics.MetricRegistry;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.coursera.metrics.datadog.DatadogReporter;
+import org.coursera.metrics.datadog.transport.HttpTransport;
+import org.coursera.metrics.datadog.transport.Transport;
 import org.coursera.metrics.datadog.transport.UdpTransport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -16,18 +36,13 @@ import java.util.concurrent.TimeUnit;
  */
 public class DDMetricRegistryBuilder {
 
-    private long interval = 10;
 
     private MetricRegistry metricRegistry = null;
-
     private String name = null;
-
     private List<String> tags = Arrays.asList();
-
-    public DDMetricRegistryBuilder setInterval(long interval) {
-        this.interval = interval;
-        return this;
-    }
+    private DatadogReporter datadogReporter;
+    private String apiKey = "";
+    private Transport transport;
 
     public DDMetricRegistryBuilder setMetricRegistry(MetricRegistry metricRegistry) {
         this.metricRegistry = metricRegistry;
@@ -44,26 +59,48 @@ public class DDMetricRegistryBuilder {
         return this;
     }
 
-    public MetricRegistry build() throws IOException {
+    public DatadogReporter getDatadogReporter() {
+        return datadogReporter;
+    }
+
+    public MetricRegistry build(String apiKey) throws IOException {
         if(metricRegistry == null)
             metricRegistry = new MetricRegistry();
 
         if(name==null) {
             name = RandomStringUtils.randomAlphanumeric(8);
         }
-        DatadogReporter datadogReporter = createDatadogReporter(this.metricRegistry);
-        datadogReporter.start(this.interval, TimeUnit.SECONDS);
-
+        if(createTransport(apiKey)) {
+            datadogReporter = createDatadogReporter(this.metricRegistry);
+        }
         return this.metricRegistry;
     }
 
-    //create DataDog reporter
+    private boolean createTransport(String apiKey) {
+        //if api key was not changed
+        if(this.apiKey.equals(apiKey)) {
+            return false;
+        }
+        else if (apiKey.equals("agent")){
+            this.apiKey = "agent";
+            transport = new UdpTransport.Builder().build();
+            return true;
+        }
+        else {
+            this.apiKey = apiKey;
+            transport = new HttpTransport.Builder().withApiKey(apiKey).build();
+            return true;
+        }
+    }
+
+    /*
+     * create DataDog reporter
+     */
     private DatadogReporter createDatadogReporter(MetricRegistry metricRegistry) throws IOException {
-        UdpTransport udpTransport = new UdpTransport.Builder().build();
         DatadogReporter reporter =
                 DatadogReporter.forRegistry(metricRegistry)
                         .withHost(InetAddress.getLocalHost().getHostName())
-                        .withTransport(udpTransport)
+                        .withTransport(transport)
                         .withTags(tags)
                         .build();
         return reporter;

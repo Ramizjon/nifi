@@ -1,3 +1,19 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.nifi.reporting.datadog;
 
 
@@ -9,17 +25,17 @@ import com.yammer.metrics.core.VirtualMachineMetrics;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
+import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.controller.ConfigurationContext;
 import org.apache.nifi.controller.status.ProcessGroupStatus;
 import org.apache.nifi.controller.status.ProcessorStatus;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.reporting.AbstractReportingTask;
 import org.apache.nifi.reporting.ReportingContext;
 import org.apache.nifi.reporting.datadog.metrics.MetricsService;
 import org.coursera.metrics.datadog.DynamicTagsCallback;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -32,14 +48,27 @@ import java.util.concurrent.ConcurrentHashMap;
 @CapabilityDescription("Publishes metrics from NiFi to datadog")
 public class DataDogReportingTask extends AbstractReportingTask {
 
-    //the amount of time between polls
-    static final PropertyDescriptor REPORTING_PERIOD = new PropertyDescriptor.Builder()
-            .name("DataDog reporting period")
-            .description("The amount of time in seconds between polls")
+    static final AllowableValue DATADOG_AGENT = new AllowableValue("DataDog Agent", "DataDog UDP Agent",
+            "Metrics will be sent via locally installed DataDog agent over UDP");
+
+    static final AllowableValue DATADOG_HTTP = new AllowableValue("Datadog HTTP", "Datadog HTTP",
+            "Metrics will be sent via HTTP transport with no need of Agent installed. " +
+                    "DataDog API key needs to be set");
+
+    static final PropertyDescriptor DATADOG_TRANSPORT = new PropertyDescriptor.Builder()
+            .name("DataDog transport")
+            .description("Transport through which metrics will be sent to DataDog")
             .required(true)
+            .allowableValues(DATADOG_AGENT, DATADOG_HTTP)
+            .defaultValue(DATADOG_AGENT.getValue())
+            .build();
+
+    static final PropertyDescriptor API_KEY = new PropertyDescriptor.Builder()
+            .name("API key")
+            .description("DataDog API key. If specified value is 'agent', local DataDog agent will be used.")
             .expressionLanguageSupported(false)
-            .defaultValue("10")
-            .addValidator(StandardValidators.LONG_VALIDATOR)
+            .required(false)
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
 
     static final PropertyDescriptor METRICS_PREFIX = new PropertyDescriptor.Builder()
@@ -67,47 +96,49 @@ public class DataDogReportingTask extends AbstractReportingTask {
     private String metricsPrefix;
     private String environment;
     private String statusId;
+    private String apiKey;
     private ConcurrentHashMap<String, AtomicDouble> metricsMap;
     private volatile VirtualMachineMetrics virtualMachineMetrics;
-    private Logger logger = LoggerFactory.getLogger(getClass().getName());
 
     @OnScheduled
-    public void setup(final ConfigurationContext context) throws IOException {
+    public void setup(final ConfigurationContext context) {
         metricsService = getMetricsService();
         ddMetricRegistryBuilder = getMetricRegistryBuilder();
         metricRegistry = getMetricRegistry();
         metricsMap = getMetricsMap();
         metricsPrefix = METRICS_PREFIX.getDefaultValue();
         environment = ENVIRONMENT.getDefaultValue();
+        apiKey = API_KEY.getDefaultValue();
         virtualMachineMetrics = VirtualMachineMetrics.getInstance();
         ddMetricRegistryBuilder.setMetricRegistry(metricRegistry)
                 .setName("nifi_metrics")
-                .setTags(Arrays.asList("env", "dataflow_id"))
-                .build();
+                .setTags(Arrays.asList("env", "dataflow_id"));
     }
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
         final List<PropertyDescriptor> properties = new ArrayList<>();
-        properties.add(REPORTING_PERIOD);
         properties.add(METRICS_PREFIX);
         properties.add(ENVIRONMENT);
+        properties.add(API_KEY);
+        properties.add(DATADOG_TRANSPORT);
         return properties;
     }
 
     @Override
     public void onTrigger(ReportingContext context) {
         final ProcessGroupStatus status = context.getEventAccess().getControllerStatus();
-        final String reportingPeriod = context.getProperty(REPORTING_PERIOD)
-                .evaluateAttributeExpressions().getValue();
-        metricsPrefix = context.getProperty(METRICS_PREFIX)
-                .evaluateAttributeExpressions().getValue();
-        environment = context.getProperty(ENVIRONMENT)
-                .evaluateAttributeExpressions().getValue();
+        metricsPrefix = context.getProperty(METRICS_PREFIX).getValue();
+        environment = context.getProperty(ENVIRONMENT).getValue();
+        apiKey = context.getProperty(API_KEY).getValue();
         statusId = status.getId();
+        try{
+            updateDataDogTransport(context);
+        } catch (IOException e){
+            e.printStackTrace();
+        }
         final List<ProcessorStatus> processorStatuses = new ArrayList<>();
         populateProcessorStatuses(status, processorStatuses);
-        ddMetricRegistryBuilder.setInterval(Long.parseLong(reportingPeriod));
         for (final ProcessorStatus processorStatus : processorStatuses) {
             updateMetrics(metricsService.getProcessorMetrics(processorStatus),
                     Optional.of(processorStatus.getName()));
@@ -115,13 +146,13 @@ public class DataDogReportingTask extends AbstractReportingTask {
         updateMetrics(metricsService.getJVMMetrics(virtualMachineMetrics),
                 Optional.<String>absent());
         updateMetrics(metricsService.getDataFlowMetrics(status), Optional.<String>absent());
+        //report all metrics to DataDog
+        ddMetricRegistryBuilder.getDatadogReporter().report();
     }
-
 
     protected void updateMetrics(Map<String, String> metrics, Optional<String> processorName) {
         for (Map.Entry<String, String> entry : metrics.entrySet()) {
             final String metricName = buildMetricName(processorName, entry.getKey());
-            logger.info(metricName + ": " + entry.getValue());
             //if metric is not registered yet - register it
             if (!metricsMap.containsKey(metricName)) {
                 metricsMap.put(metricName, new AtomicDouble(Double.parseDouble(entry.getValue())));
@@ -133,7 +164,6 @@ public class DataDogReportingTask extends AbstractReportingTask {
     }
 
     private class MetricGauge implements Gauge, DynamicTagsCallback {
-
         String metricName;
         String environment;
         String dataflowId;
@@ -155,6 +185,17 @@ public class DataDogReportingTask extends AbstractReportingTask {
         }
     }
 
+    private void updateDataDogTransport(ReportingContext context) throws IOException{
+        String dataDogTransport = context.getProperty(DATADOG_TRANSPORT).getValue();
+        if (dataDogTransport.equalsIgnoreCase(DATADOG_AGENT.getValue())){
+            ddMetricRegistryBuilder.build("agent");
+        }
+        else if (dataDogTransport.equalsIgnoreCase(DATADOG_HTTP.getValue())
+                && context.getProperty(API_KEY).isSet()) {
+            ddMetricRegistryBuilder.build(context.getProperty(API_KEY).getValue());
+        }
+    }
+
     private void populateProcessorStatuses(final ProcessGroupStatus groupStatus, final List<ProcessorStatus> statuses) {
         statuses.addAll(groupStatus.getProcessorStatus());
         for (final ProcessGroupStatus childGroupStatus : groupStatus.getProcessGroupStatus()) {
@@ -165,7 +206,6 @@ public class DataDogReportingTask extends AbstractReportingTask {
     private String buildMetricName(Optional<String> processorName, String metricName) {
         return metricsPrefix + "." + processorName.or("flow") + "." + metricName;
     }
-
 
     protected MetricsService getMetricsService() {
         return new MetricsService();
