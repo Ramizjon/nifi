@@ -30,7 +30,6 @@ import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.controller.ConfigurationContext;
 import org.apache.nifi.controller.status.ProcessGroupStatus;
 import org.apache.nifi.controller.status.ProcessorStatus;
-import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.reporting.AbstractReportingTask;
 import org.apache.nifi.reporting.ReportingContext;
@@ -132,9 +131,9 @@ public class DataDogReportingTask extends AbstractReportingTask {
         environment = context.getProperty(ENVIRONMENT).getValue();
         apiKey = context.getProperty(API_KEY).getValue();
         statusId = status.getId();
-        try{
+        try {
             updateDataDogTransport(context);
-        } catch (IOException e){
+        } catch (IOException e) {
             e.printStackTrace();
         }
         final List<ProcessorStatus> processorStatuses = new ArrayList<>();
@@ -185,12 +184,11 @@ public class DataDogReportingTask extends AbstractReportingTask {
         }
     }
 
-    private void updateDataDogTransport(ReportingContext context) throws IOException{
+    private void updateDataDogTransport(ReportingContext context) throws IOException {
         String dataDogTransport = context.getProperty(DATADOG_TRANSPORT).getValue();
-        if (dataDogTransport.equalsIgnoreCase(DATADOG_AGENT.getValue())){
+        if (dataDogTransport.equalsIgnoreCase(DATADOG_AGENT.getValue())) {
             ddMetricRegistryBuilder.build("agent");
-        }
-        else if (dataDogTransport.equalsIgnoreCase(DATADOG_HTTP.getValue())
+        } else if (dataDogTransport.equalsIgnoreCase(DATADOG_HTTP.getValue())
                 && context.getProperty(API_KEY).isSet()) {
             ddMetricRegistryBuilder.build(context.getProperty(API_KEY).getValue());
         }

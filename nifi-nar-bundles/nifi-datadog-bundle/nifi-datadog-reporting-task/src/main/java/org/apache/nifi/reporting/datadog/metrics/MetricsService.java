@@ -44,7 +44,7 @@ public class MetricsService {
 
 
     //general metrics for whole dataflow
-    public Map<String,String> getDataFlowMetrics(ProcessGroupStatus status) {
+    public Map<String, String> getDataFlowMetrics(ProcessGroupStatus status) {
         final Map<String, String> metrics = new HashMap<>();
         metrics.put(MetricNames.FLOW_FILES_RECEIVED, String.valueOf(status.getFlowFilesReceived()));
         metrics.put(MetricNames.BYTES_RECEIVED, String.valueOf(status.getBytesReceived()));
@@ -59,7 +59,7 @@ public class MetricsService {
         return metrics;
     }
 
-        //virtual machine metrics
+    //virtual machine metrics
     public Map<String, String> getJVMMetrics(VirtualMachineMetrics virtualMachineMetrics) {
         final Map<String, String> metrics = new HashMap<>();
         metrics.put(MetricNames.JVM_UPTIME, String.valueOf(virtualMachineMetrics.uptime()));

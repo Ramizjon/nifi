@@ -22,14 +22,11 @@ import org.coursera.metrics.datadog.DatadogReporter;
 import org.coursera.metrics.datadog.transport.HttpTransport;
 import org.coursera.metrics.datadog.transport.Transport;
 import org.coursera.metrics.datadog.transport.UdpTransport;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Class configures MetricRegistry (passed outside or created from scratch) with Datadog support
@@ -64,13 +61,13 @@ public class DDMetricRegistryBuilder {
     }
 
     public MetricRegistry build(String apiKey) throws IOException {
-        if(metricRegistry == null)
+        if (metricRegistry == null)
             metricRegistry = new MetricRegistry();
 
-        if(name==null) {
+        if (name == null) {
             name = RandomStringUtils.randomAlphanumeric(8);
         }
-        if(createTransport(apiKey)) {
+        if (createTransport(apiKey)) {
             datadogReporter = createDatadogReporter(this.metricRegistry);
         }
         return this.metricRegistry;
@@ -78,15 +75,13 @@ public class DDMetricRegistryBuilder {
 
     private boolean createTransport(String apiKey) {
         //if api key was not changed
-        if(this.apiKey.equals(apiKey)) {
+        if (this.apiKey.equals(apiKey)) {
             return false;
-        }
-        else if (apiKey.equals("agent")){
+        } else if (apiKey.equals("agent")) {
             this.apiKey = "agent";
             transport = new UdpTransport.Builder().build();
             return true;
-        }
-        else {
+        } else {
             this.apiKey = apiKey;
             transport = new HttpTransport.Builder().withApiKey(apiKey).build();
             return true;
