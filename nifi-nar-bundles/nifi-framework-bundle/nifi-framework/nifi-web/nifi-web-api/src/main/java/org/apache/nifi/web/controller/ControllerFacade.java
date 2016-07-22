@@ -32,7 +32,6 @@ import org.apache.nifi.authorization.user.NiFiUser;
 import org.apache.nifi.authorization.user.NiFiUserUtils;
 import org.apache.nifi.authorization.user.StandardNiFiUser;
 import org.apache.nifi.cluster.coordination.ClusterCoordinator;
-import org.apache.nifi.cluster.coordination.node.NodeConnectionState;
 import org.apache.nifi.cluster.protocol.NodeIdentifier;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.connectable.Connectable;
@@ -58,6 +57,7 @@ import org.apache.nifi.controller.status.PortStatus;
 import org.apache.nifi.controller.status.ProcessGroupStatus;
 import org.apache.nifi.controller.status.ProcessorStatus;
 import org.apache.nifi.controller.status.RemoteProcessGroupStatus;
+import org.apache.nifi.controller.status.history.ComponentStatusRepository;
 import org.apache.nifi.diagnostics.SystemDiagnostics;
 import org.apache.nifi.flowfile.FlowFilePrioritizer;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
@@ -69,8 +69,8 @@ import org.apache.nifi.nar.NarCloseable;
 import org.apache.nifi.processor.DataUnit;
 import org.apache.nifi.processor.Processor;
 import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.provenance.ProvenanceRepository;
 import org.apache.nifi.provenance.ProvenanceEventRecord;
-import org.apache.nifi.provenance.ProvenanceEventRepository;
 import org.apache.nifi.provenance.SearchableFields;
 import org.apache.nifi.provenance.lineage.ComputeLineageSubmission;
 import org.apache.nifi.provenance.search.Query;
@@ -80,9 +80,7 @@ import org.apache.nifi.provenance.search.SearchTerm;
 import org.apache.nifi.provenance.search.SearchTerms;
 import org.apache.nifi.provenance.search.SearchableField;
 import org.apache.nifi.remote.RootGroupPort;
-import org.apache.nifi.reporting.BulletinQuery;
 import org.apache.nifi.reporting.BulletinRepository;
-import org.apache.nifi.reporting.ComponentType;
 import org.apache.nifi.reporting.ReportingTask;
 import org.apache.nifi.scheduling.SchedulingStrategy;
 import org.apache.nifi.search.SearchContext;
@@ -152,15 +150,6 @@ public class ControllerFacade implements Authorizable {
     private NiFiProperties properties;
     private DtoFactory dtoFactory;
 
-
-    /**
-     * Creates an archive of the current flow.
-     *
-     * @throws IOException if unable to save a copy of the flow
-     */
-    public void createArchive() throws IOException {
-        flowService.archiveFlow();
-    }
 
     /**
      * Returns the group id that contains the specified processor.
@@ -280,7 +269,15 @@ public class ControllerFacade implements Authorizable {
             throw new ResourceNotFoundException(String.format("Unable to locate processor with id '%s'.", processorId));
         }
 
-        return flowController.getProcessorStatusHistory(processorId);
+        final StatusHistoryDTO statusHistory = flowController.getProcessorStatusHistory(processorId);
+
+        // if not authorized
+        if (!processor.isAuthorized(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser())) {
+            statusHistory.getComponentDetails().put(ComponentStatusRepository.COMPONENT_DETAIL_NAME, processorId);
+            statusHistory.getComponentDetails().put(ComponentStatusRepository.COMPONENT_DETAIL_TYPE, "Processor");
+        }
+
+        return statusHistory;
     }
 
     /**
@@ -298,7 +295,16 @@ public class ControllerFacade implements Authorizable {
             throw new ResourceNotFoundException(String.format("Unable to locate connection with id '%s'.", connectionId));
         }
 
-        return flowController.getConnectionStatusHistory(connectionId);
+        final StatusHistoryDTO statusHistory = flowController.getConnectionStatusHistory(connectionId);
+
+        // if not authorized
+        if (!connection.isAuthorized(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser())) {
+            statusHistory.getComponentDetails().put(ComponentStatusRepository.COMPONENT_DETAIL_NAME, connectionId);
+            statusHistory.getComponentDetails().put(ComponentStatusRepository.COMPONENT_DETAIL_SOURCE_NAME, connection.getSource().getIdentifier());
+            statusHistory.getComponentDetails().put(ComponentStatusRepository.COMPONENT_DETAIL_DESTINATION_NAME, connection.getDestination().getIdentifier());
+        }
+
+        return statusHistory;
     }
 
     /**
@@ -317,7 +323,14 @@ public class ControllerFacade implements Authorizable {
             throw new ResourceNotFoundException(String.format("Unable to locate process group with id '%s'.", groupId));
         }
 
-        return flowController.getProcessGroupStatusHistory(groupId);
+        final StatusHistoryDTO statusHistory = flowController.getProcessGroupStatusHistory(groupId);
+
+        // if not authorized
+        if (!group.isAuthorized(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser())) {
+            statusHistory.getComponentDetails().put(ComponentStatusRepository.COMPONENT_DETAIL_NAME, groupId);
+        }
+
+        return statusHistory;
     }
 
     /**
@@ -335,7 +348,15 @@ public class ControllerFacade implements Authorizable {
             throw new ResourceNotFoundException(String.format("Unable to locate remote process group with id '%s'.", remoteProcessGroupId));
         }
 
-        return flowController.getRemoteProcessGroupStatusHistory(remoteProcessGroupId);
+        final StatusHistoryDTO statusHistory = flowController.getRemoteProcessGroupStatusHistory(remoteProcessGroupId);
+
+        // if not authorized
+        if (!remoteProcessGroup.isAuthorized(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser())) {
+            statusHistory.getComponentDetails().put(ComponentStatusRepository.COMPONENT_DETAIL_NAME, remoteProcessGroupId);
+            statusHistory.getComponentDetails().remove(ComponentStatusRepository.COMPONENT_DETAIL_URI);
+        }
+
+        return statusHistory;
     }
 
     /**
@@ -506,30 +527,6 @@ public class ControllerFacade implements Authorizable {
         controllerStatus.setBytesQueued(controllerQueueSize.getByteCount());
         controllerStatus.setFlowFilesQueued(controllerQueueSize.getObjectCount());
 
-        if (clusterCoordinator != null && clusterCoordinator.isConnected()) {
-            final Map<NodeConnectionState, List<NodeIdentifier>> stateMap = clusterCoordinator.getConnectionStates();
-            int totalNodeCount = 0;
-            for (final List<NodeIdentifier> nodeList : stateMap.values()) {
-                totalNodeCount += nodeList.size();
-            }
-            final List<NodeIdentifier> connectedNodeIds = stateMap.get(NodeConnectionState.CONNECTED);
-            final int connectedNodeCount = (connectedNodeIds == null) ? 0 : connectedNodeIds.size();
-
-            controllerStatus.setConnectedNodeCount(connectedNodeCount);
-            controllerStatus.setTotalNodeCount(totalNodeCount);
-            controllerStatus.setConnectedNodes(connectedNodeCount + " / " + totalNodeCount);
-        }
-
-        controllerStatus.setBulletins(dtoFactory.createBulletinDtos(bulletinRepository.findBulletinsForController()));
-
-        // get the controller service bulletins
-        final BulletinQuery controllerServiceQuery = new BulletinQuery.Builder().sourceType(ComponentType.CONTROLLER_SERVICE).build();
-        controllerStatus.setControllerServiceBulletins(dtoFactory.createBulletinDtos(bulletinRepository.findBulletins(controllerServiceQuery)));
-
-        // get the reporting task bulletins
-        final BulletinQuery reportingTaskQuery = new BulletinQuery.Builder().sourceType(ComponentType.REPORTING_TASK).build();
-        controllerStatus.setReportingTaskBulletins(dtoFactory.createBulletinDtos(bulletinRepository.findBulletins(reportingTaskQuery)));
-
         final ProcessGroupCounts counts = rootGroup.getCounts();
         controllerStatus.setRunningCount(counts.getRunningCount());
         controllerStatus.setStoppedCount(counts.getStoppedCount());
@@ -548,10 +545,11 @@ public class ControllerFacade implements Authorizable {
      * @return the status for the specified process group
      */
     public ProcessGroupStatus getProcessGroupStatus(final String groupId) {
-        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId);
+        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId, NiFiUserUtils.getNiFiUser());
         if (processGroupStatus == null) {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
+
         return processGroupStatus;
     }
 
@@ -572,7 +570,7 @@ public class ControllerFacade implements Authorizable {
 
         // calculate the process group status
         final String groupId = processor.getProcessGroup().getIdentifier();
-        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId);
+        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId, NiFiUserUtils.getNiFiUser());
         if (processGroupStatus == null) {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
@@ -602,7 +600,7 @@ public class ControllerFacade implements Authorizable {
 
         // calculate the process group status
         final String groupId = connection.getProcessGroup().getIdentifier();
-        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId);
+        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId, NiFiUserUtils.getNiFiUser());
         if (processGroupStatus == null) {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
@@ -631,7 +629,7 @@ public class ControllerFacade implements Authorizable {
         }
 
         final String groupId = port.getProcessGroup().getIdentifier();
-        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId);
+        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId, NiFiUserUtils.getNiFiUser());
         if (processGroupStatus == null) {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
@@ -660,7 +658,7 @@ public class ControllerFacade implements Authorizable {
         }
 
         final String groupId = port.getProcessGroup().getIdentifier();
-        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId);
+        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId, NiFiUserUtils.getNiFiUser());
         if (processGroupStatus == null) {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
@@ -689,7 +687,7 @@ public class ControllerFacade implements Authorizable {
         }
 
         final String groupId = remoteProcessGroup.getProcessGroup().getIdentifier();
-        final ProcessGroupStatus groupStatus = flowController.getGroupStatus(groupId);
+        final ProcessGroupStatus groupStatus = flowController.getGroupStatus(groupId, NiFiUserUtils.getNiFiUser());
         if (groupStatus == null) {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
@@ -711,39 +709,6 @@ public class ControllerFacade implements Authorizable {
         // save the flow controller
         final long writeDelaySeconds = FormatUtils.getTimeDuration(properties.getFlowServiceWriteDelay(), TimeUnit.SECONDS);
         flowService.saveFlowChanges(TimeUnit.SECONDS, writeDelaySeconds);
-    }
-
-    /**
-     * Returns the socket port that the Cluster Manager is listening on for
-     * Site-to-Site communications
-     *
-     * @return the socket port that the Cluster Manager is listening on for
-     *         Site-to-Site communications
-     */
-    public Integer getClusterManagerRemoteSiteListeningPort() {
-        return flowController.getClusterManagerRemoteSiteListeningPort();
-    }
-
-    /**
-     * Returns the http(s) port that the Cluster Manager is listening on for
-     * Site-to-Site communications
-     *
-     * @return the socket port that the Cluster Manager is listening on for
-     *         Site-to-Site communications
-     */
-    public Integer getClusterManagerRemoteSiteListeningHttpPort() {
-        return flowController.getClusterManagerRemoteSiteListeningHttpPort();
-    }
-
-    /**
-     * Indicates whether or not Site-to-Site communications with the Cluster
-     * Manager are secure
-     *
-     * @return whether or not Site-to-Site communications with the Cluster
-     *         Manager are secure
-     */
-    public Boolean isClusterManagerRemoteSiteCommsSecure() {
-        return flowController.isClusterManagerRemoteSiteCommsSecure();
     }
 
     /**
@@ -805,12 +770,6 @@ public class ControllerFacade implements Authorizable {
             resources.add(ResourceFactory.getProvenanceEventResource(processor.getResource()));
         }
 
-        // add each connection
-        for (final Connection connection : root.findAllConnections()) {
-            resources.add(ResourceFactory.getComponentResource(ResourceType.Connection, connection.getIdentifier(), connection.getName()));
-            resources.add(ResourceFactory.getFlowFileQueueResource(connection.getIdentifier(), connection.getName()));
-        }
-
         // add each label
         for (final Label label : root.findAllLabels()) {
             resources.add(ResourceFactory.getComponentResource(ResourceType.Label, label.getIdentifier(), label.getValue()));
@@ -867,7 +826,7 @@ public class ControllerFacade implements Authorizable {
      * @return the available options for searching provenance
      */
     public ProvenanceOptionsDTO getProvenanceSearchOptions() {
-        final ProvenanceEventRepository provenanceRepository = flowController.getProvenanceRepository();
+        final ProvenanceRepository provenanceRepository = flowController.getProvenanceRepository();
 
         // create the search options dto
         final ProvenanceOptionsDTO searchOptions = new ProvenanceOptionsDTO();
@@ -941,7 +900,7 @@ public class ControllerFacade implements Authorizable {
         }
 
         // submit the query to the provenance repository
-        final ProvenanceEventRepository provenanceRepository = flowController.getProvenanceRepository();
+        final ProvenanceRepository provenanceRepository = flowController.getProvenanceRepository();
         final QuerySubmission querySubmission = provenanceRepository.submitQuery(query, NiFiUserUtils.getNiFiUser());
 
         // return the query with the results populated at this point
@@ -957,7 +916,7 @@ public class ControllerFacade implements Authorizable {
     public ProvenanceDTO getProvenanceQuery(String provenanceId) {
         try {
             // get the query to the provenance repository
-            final ProvenanceEventRepository provenanceRepository = flowController.getProvenanceRepository();
+            final ProvenanceRepository provenanceRepository = flowController.getProvenanceRepository();
             final QuerySubmission querySubmission = provenanceRepository.retrieveQuerySubmission(provenanceId, NiFiUserUtils.getNiFiUser());
 
             // ensure the query results could be found
@@ -1049,7 +1008,7 @@ public class ControllerFacade implements Authorizable {
         final LineageRequestDTO requestDto = lineageDto.getRequest();
 
         // get the provenance repo
-        final ProvenanceEventRepository provenanceRepository = flowController.getProvenanceRepository();
+        final ProvenanceRepository provenanceRepository = flowController.getProvenanceRepository();
         final ComputeLineageSubmission result;
 
         // submit the event
@@ -1076,7 +1035,7 @@ public class ControllerFacade implements Authorizable {
      */
     public LineageDTO getLineage(final String lineageId) {
         // get the query to the provenance repository
-        final ProvenanceEventRepository provenanceRepository = flowController.getProvenanceRepository();
+        final ProvenanceRepository provenanceRepository = flowController.getProvenanceRepository();
         final ComputeLineageSubmission computeLineageSubmission = provenanceRepository.retrieveLineageSubmission(lineageId, NiFiUserUtils.getNiFiUser());
 
         // ensure the submission was found
@@ -1094,7 +1053,7 @@ public class ControllerFacade implements Authorizable {
      */
     public void deleteProvenanceQuery(final String provenanceId) {
         // get the query to the provenance repository
-        final ProvenanceEventRepository provenanceRepository = flowController.getProvenanceRepository();
+        final ProvenanceRepository provenanceRepository = flowController.getProvenanceRepository();
         final QuerySubmission querySubmission = provenanceRepository.retrieveQuerySubmission(provenanceId, NiFiUserUtils.getNiFiUser());
         if (querySubmission != null) {
             querySubmission.cancel();
@@ -1108,7 +1067,7 @@ public class ControllerFacade implements Authorizable {
      */
     public void deleteLineage(final String lineageId) {
         // get the query to the provenance repository
-        final ProvenanceEventRepository provenanceRepository = flowController.getProvenanceRepository();
+        final ProvenanceRepository provenanceRepository = flowController.getProvenanceRepository();
         final ComputeLineageSubmission computeLineageSubmission = provenanceRepository.retrieveLineageSubmission(lineageId, NiFiUserUtils.getNiFiUser());
         if (computeLineageSubmission != null) {
             computeLineageSubmission.cancel();
@@ -1183,11 +1142,11 @@ public class ControllerFacade implements Authorizable {
                 throw new ResourceNotFoundException("Unable to find the specified event.");
             }
 
+            // authorize the replay
+            authorizeReplay(originalEvent.getComponentId(), originalEvent.getAttributes(), originalEvent.getSourceQueueIdentifier());
+
             // replay the flow file
             final ProvenanceEventRecord event = flowController.replayFlowFile(originalEvent, user);
-
-            // authorize the replay
-            authorizeReplay(event.getComponentId(), event.getAttributes(), event.getSourceQueueIdentifier());
 
             // convert the event record
             return createProvenanceEventDto(event);
@@ -1326,6 +1285,16 @@ public class ControllerFacade implements Authorizable {
         } catch (final IOException ioe) {
             throw new NiFiCoreException("An error occured while getting the specified event.", ioe);
         }
+    }
+
+    /**
+     * Gets an authorizable for proveance events for a given component id.
+     *
+     * @param componentId component id
+     * @return authorizable
+     */
+    public Authorizable getProvenanceEventAuthorizable(final String componentId) {
+        return flowController.createProvenanceAuthorizable(componentId);
     }
 
     /**

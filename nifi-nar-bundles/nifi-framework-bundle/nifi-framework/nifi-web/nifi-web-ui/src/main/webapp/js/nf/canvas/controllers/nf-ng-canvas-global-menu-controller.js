@@ -141,7 +141,7 @@ nf.ng.Canvas.GlobalMenuCtrl = function (serviceProvider) {
              * @returns {*|boolean}
              */
             visible: function () {
-                return nf.Canvas.isClustered();
+                return nf.Canvas.isConnectedToCluster();
             },
 
             /**
@@ -195,6 +195,27 @@ nf.ng.Canvas.GlobalMenuCtrl = function (serviceProvider) {
                 launch: function () {
                     if (nf.Common.canAccessTenants()) {
                         nf.Shell.showPage('users');
+                    }
+                }
+            }
+        };
+
+        /**
+         * The policies menu item controller.
+         */
+        this.policies = {
+
+            /**
+             * The policies menu item's shell controller.
+             */
+            shell: {
+
+                /**
+                 * Launch the policies shell.
+                 */
+                launch: function () {
+                    if (nf.Common.canModifyPolicies() && nf.Common.canAccessTenants()) {
+                        nf.PolicyManagement.showGlobalPolicies();
                     }
                 }
             }
@@ -263,6 +284,7 @@ nf.ng.Canvas.GlobalMenuCtrl = function (serviceProvider) {
                     // store the content viewer url if available
                     if (!nf.Common.isBlank(aboutDetails.contentViewerUrl)) {
                         $('#nifi-content-viewer-url').text(aboutDetails.contentViewerUrl);
+                        nf.QueueListing.initFlowFileDetailsDialog();
                     }
                 }).fail(nf.Common.handleAjaxError);
 

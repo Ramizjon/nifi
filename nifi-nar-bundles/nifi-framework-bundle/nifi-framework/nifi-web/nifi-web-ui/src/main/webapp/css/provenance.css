@@ -80,7 +80,7 @@ div.provenance-panel {
 
 #provenance-filter-container {
     height: 24px;
-    width: 326px;
+    width: 100%;
 }
 
 #provenance-filter {
@@ -94,7 +94,6 @@ input.provenance-filter-list {
 }
 
 #provenance-filter-type {
-    width: 128px;
     float: left;
 }
 
@@ -171,12 +170,6 @@ div.searchable-field-value {
 
 #provenance-search-location-container {
     display: none;
-}
-
-#provenance-search-location {
-    height: 18px;
-    line-height: 18px;
-    width: 424px;
 }
 
 /* event details dialog */

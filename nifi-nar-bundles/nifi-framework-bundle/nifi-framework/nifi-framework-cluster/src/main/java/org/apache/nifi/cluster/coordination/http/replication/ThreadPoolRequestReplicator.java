@@ -17,6 +17,38 @@
 
 package org.apache.nifi.cluster.coordination.http.replication;
 
+import com.sun.jersey.api.client.Client;
+import com.sun.jersey.api.client.ClientResponse;
+import com.sun.jersey.api.client.WebResource;
+import com.sun.jersey.api.client.config.ClientConfig;
+import com.sun.jersey.api.client.filter.GZIPContentEncodingFilter;
+import com.sun.jersey.core.util.MultivaluedMapImpl;
+import org.apache.nifi.authorization.user.NiFiUser;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.cluster.coordination.ClusterCoordinator;
+import org.apache.nifi.cluster.coordination.http.HttpResponseMerger;
+import org.apache.nifi.cluster.coordination.http.StandardHttpResponseMerger;
+import org.apache.nifi.cluster.coordination.node.NodeConnectionState;
+import org.apache.nifi.cluster.coordination.node.NodeConnectionStatus;
+import org.apache.nifi.cluster.manager.NodeResponse;
+import org.apache.nifi.cluster.manager.exception.ConnectingNodeMutableRequestException;
+import org.apache.nifi.cluster.manager.exception.DisconnectedNodeMutableRequestException;
+import org.apache.nifi.cluster.manager.exception.IllegalClusterStateException;
+import org.apache.nifi.cluster.manager.exception.NoConnectedNodesException;
+import org.apache.nifi.cluster.manager.exception.UnknownNodeException;
+import org.apache.nifi.cluster.manager.exception.UriConstructionException;
+import org.apache.nifi.cluster.protocol.NodeIdentifier;
+import org.apache.nifi.events.EventReporter;
+import org.apache.nifi.reporting.Severity;
+import org.apache.nifi.util.FormatUtils;
+import org.apache.nifi.util.TypeOneUUIDGenerator;
+import org.apache.nifi.web.security.ProxiedEntitiesUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.ws.rs.HttpMethod;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.MultivaluedMap;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Collections;
@@ -41,39 +73,6 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-
-import javax.ws.rs.HttpMethod;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.MultivaluedMap;
-
-import org.apache.nifi.authorization.user.NiFiUser;
-import org.apache.nifi.authorization.user.NiFiUserUtils;
-import org.apache.nifi.cluster.coordination.ClusterCoordinator;
-import org.apache.nifi.cluster.coordination.http.HttpResponseMerger;
-import org.apache.nifi.cluster.coordination.http.StandardHttpResponseMerger;
-import org.apache.nifi.cluster.coordination.node.NodeConnectionState;
-import org.apache.nifi.cluster.coordination.node.NodeConnectionStatus;
-import org.apache.nifi.cluster.manager.NodeResponse;
-import org.apache.nifi.cluster.manager.exception.ConnectingNodeMutableRequestException;
-import org.apache.nifi.cluster.manager.exception.DisconnectedNodeMutableRequestException;
-import org.apache.nifi.cluster.manager.exception.IllegalClusterStateException;
-import org.apache.nifi.cluster.manager.exception.NoConnectedNodesException;
-import org.apache.nifi.cluster.manager.exception.UnknownNodeException;
-import org.apache.nifi.cluster.manager.exception.UriConstructionException;
-import org.apache.nifi.cluster.protocol.NodeIdentifier;
-import org.apache.nifi.events.EventReporter;
-import org.apache.nifi.reporting.Severity;
-import org.apache.nifi.util.FormatUtils;
-import org.apache.nifi.web.security.ProxiedEntitiesUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.sun.jersey.api.client.Client;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.WebResource;
-import com.sun.jersey.api.client.config.ClientConfig;
-import com.sun.jersey.api.client.filter.GZIPContentEncodingFilter;
-import com.sun.jersey.core.util.MultivaluedMapImpl;
 
 public class ThreadPoolRequestReplicator implements RequestReplicator {
 
@@ -161,7 +160,7 @@ public class ThreadPoolRequestReplicator implements RequestReplicator {
             }
         });
 
-        maintenanceExecutor.scheduleWithFixedDelay(new PurgeExpiredRequestsTask(), 3, 3, TimeUnit.SECONDS);
+        maintenanceExecutor.scheduleWithFixedDelay(() -> purgeExpiredRequests(), 1, 1, TimeUnit.SECONDS);
     }
 
     @Override
@@ -218,11 +217,12 @@ public class ThreadPoolRequestReplicator implements RequestReplicator {
     @Override
     public AsyncClusterResponse replicate(Set<NodeIdentifier> nodeIds, String method, URI uri, Object entity, Map<String, String> headers, final boolean indicateReplicated) {
         final Map<String, String> updatedHeaders = new HashMap<>(headers);
-        updatedHeaders.put(RequestReplicator.CLUSTER_ID_GENERATION_SEED_HEADER, UUID.randomUUID().toString());
 
+        updatedHeaders.put(RequestReplicator.CLUSTER_ID_GENERATION_SEED_HEADER, TypeOneUUIDGenerator.generateId().toString());
         if (indicateReplicated) {
             updatedHeaders.put(RequestReplicator.REPLICATION_INDICATOR_HEADER, "true");
         }
+
 
         // If the user is authenticated, add them as a proxied entity so that when the receiving NiFi receives the request,
         // it knows that we are acting as a proxy on behalf of the current user.
@@ -301,9 +301,18 @@ public class ThreadPoolRequestReplicator implements RequestReplicator {
             verifyState(method, uri.getPath());
         }
 
-        final int numRequests = responseMap.size();
+        int numRequests = responseMap.size();
         if (numRequests >= MAX_CONCURRENT_REQUESTS) {
-            logger.debug("Cannot replicate request because there are {} outstanding HTTP Requests already", numRequests);
+            numRequests = purgeExpiredRequests();
+        }
+
+        if (numRequests >= MAX_CONCURRENT_REQUESTS) {
+            final Map<String, Long> countsByUri = responseMap.values().stream().collect(
+                Collectors.groupingBy(
+                    StandardAsyncClusterResponse::getURIPath,
+                    Collectors.counting()));
+
+            logger.error("Cannot replicate request {} {} because there are {} outstanding HTTP Requests already. Request Counts Per URI = {}", method, uri.getPath(), numRequests, countsByUri);
             throw new IllegalStateException("There are too many outstanding HTTP requests with a total " + numRequests + " outstanding requests");
         }
 
@@ -631,12 +640,12 @@ public class ThreadPoolRequestReplicator implements RequestReplicator {
 
 
     private URI createURI(final URI exampleUri, final NodeIdentifier nodeId) {
-        return createURI(exampleUri.getScheme(), nodeId.getApiAddress(), nodeId.getApiPort(), exampleUri.getPath());
+        return createURI(exampleUri.getScheme(), nodeId.getApiAddress(), nodeId.getApiPort(), exampleUri.getPath(), exampleUri.getQuery());
     }
 
-    private URI createURI(final String scheme, final String nodeApiAddress, final int nodeApiPort, final String path) {
+    private URI createURI(final String scheme, final String nodeApiAddress, final int nodeApiPort, final String path, final String query) {
         try {
-            return new URI(scheme, null, nodeApiAddress, nodeApiPort, path, null, null);
+            return new URI(scheme, null, nodeApiAddress, nodeApiPort, path, query, null);
         } catch (final URISyntaxException e) {
             throw new UriConstructionException(e);
         }
@@ -741,16 +750,14 @@ public class ThreadPoolRequestReplicator implements RequestReplicator {
         void onCompletion(NodeResponse nodeResponse);
     }
 
-    private class PurgeExpiredRequestsTask implements Runnable {
-        @Override
-        public void run() {
-            final Set<String> expiredRequestIds = ThreadPoolRequestReplicator.this.responseMap.entrySet().stream()
-                .filter(entry -> entry.getValue().isOlderThan(30, TimeUnit.SECONDS)) // older than 30 seconds
-                .filter(entry -> entry.getValue().isComplete()) // is complete
-                .map(entry -> entry.getKey()) // get the request id
-                .collect(Collectors.toSet());
+    private synchronized int purgeExpiredRequests() {
+        final Set<String> expiredRequestIds = ThreadPoolRequestReplicator.this.responseMap.entrySet().stream()
+            .filter(entry -> entry.getValue().isOlderThan(30, TimeUnit.SECONDS)) // older than 30 seconds
+            .filter(entry -> entry.getValue().isComplete()) // is complete
+            .map(entry -> entry.getKey()) // get the request id
+            .collect(Collectors.toSet());
 
-            expiredRequestIds.forEach(id -> onResponseConsumed(id));
-        }
+        expiredRequestIds.forEach(id -> onResponseConsumed(id));
+        return responseMap.size();
     }
 }

@@ -30,21 +30,11 @@ nf.Actions = (function () {
      * Initializes the drop request status dialog.
      */
     var initializeDropRequestStatusDialog = function () {
-        // initialize the drop requst progress bar
-        var dropRequestProgressBar = $('#drop-request-percent-complete').progressbar();
-
         // configure the drop request status dialog
         $('#drop-request-status-dialog').modal({
             scrollableContentStyle: 'scrollable',
             handler: {
                 close: function () {
-                    // reset the progress bar
-                    dropRequestProgressBar.find('div.progress-label').remove();
-
-                    // update the progress bar
-                    var label = $('<div class="progress-label"></div>').text('0%');
-                    dropRequestProgressBar.progressbar('value', 0).append(label);
-
                     // clear the current button model
                     $('#drop-request-status-dialog').modal('setButtonModel', []);
                 }
@@ -143,7 +133,7 @@ nf.Actions = (function () {
                 var poll = function (nextDelay) {
                     $.ajax({
                         type: 'GET',
-                        url: d.component.uri,
+                        url: d.uri,
                         dataType: 'json'
                     }).done(function (response) {
                         var remoteProcessGroup = response.component;
@@ -157,7 +147,7 @@ nf.Actions = (function () {
                             // reload the group's connections
                             var connections = nf.Connection.getComponentConnections(remoteProcessGroup.id);
                             $.each(connections, function (_, connection) {
-                                if (connection.accessPolicy.canRead) {
+                                if (connection.permissions.canRead) {
                                     nf.Connection.reload(connection.component);
                                 }
                             });
@@ -212,16 +202,16 @@ nf.Actions = (function () {
                 var selectionData = selection.datum();
 
                 // the source is in the current group
-                if (selectionData.component.source.groupId === nf.Canvas.getGroupId()) {
-                    var source = d3.select('#id-' + selectionData.component.source.id);
+                if (selectionData.sourceGroupId === nf.Canvas.getGroupId()) {
+                    var source = d3.select('#id-' + selectionData.sourceId);
                     nf.Actions.show(source);
-                } else if (selectionData.component.source.type === 'REMOTE_OUTPUT_PORT') {
+                } else if (selectionData.sourceType === 'REMOTE_OUTPUT_PORT') {
                     // if the source is remote
-                    var remoteSource = d3.select('#id-' + selectionData.component.source.groupId);
+                    var remoteSource = d3.select('#id-' + selectionData.sourceGroupId);
                     nf.Actions.show(remoteSource);
                 } else {
                     // if the source is local but in a sub group
-                    nf.CanvasUtils.showComponent(selectionData.component.source.groupId, selectionData.component.source.id);
+                    nf.CanvasUtils.showComponent(selectionData.sourceGroupId, selectionData.sourceId);
                 }
             }
         },
@@ -236,16 +226,16 @@ nf.Actions = (function () {
                 var selectionData = selection.datum();
 
                 // the destination is in the current group or its remote
-                if (selectionData.component.destination.groupId === nf.Canvas.getGroupId()) {
-                    var destination = d3.select('#id-' + selectionData.component.destination.id);
+                if (selectionData.destinationGroupId === nf.Canvas.getGroupId()) {
+                    var destination = d3.select('#id-' + selectionData.destinationId);
                     nf.Actions.show(destination);
-                } else if (selectionData.component.destination.type === 'REMOTE_INPUT_PORT') {
+                } else if (selectionData.destinationType === 'REMOTE_INPUT_PORT') {
                     // if the destination is remote
-                    var remoteDestination = d3.select('#id-' + selectionData.component.destination.groupId);
+                    var remoteDestination = d3.select('#id-' + selectionData.destinationGroupId);
                     nf.Actions.show(remoteDestination);
                 } else {
                     // if the destination is local but in a sub group
-                    nf.CanvasUtils.showComponent(selectionData.component.destination.groupId, selectionData.component.destination.id);
+                    nf.CanvasUtils.showComponent(selectionData.destinationGroupId, selectionData.destinationId);
                 }
             }
         },
@@ -408,7 +398,7 @@ nf.Actions = (function () {
                         }
                     };
 
-                    enableRequests.push(updateResource(d.component.uri, entity).done(function (response) {
+                    enableRequests.push(updateResource(d.uri, entity).done(function (response) {
                         nf[d.type].set(response);
                     }));
                 });
@@ -451,7 +441,7 @@ nf.Actions = (function () {
                         }
                     };
 
-                    disableRequests.push(updateResource(d.component.uri, entity).done(function (response) {
+                    disableRequests.push(updateResource(d.uri, entity).done(function (response) {
                         nf[d.type].set(response);
                     }));
                 });
@@ -522,7 +512,7 @@ nf.Actions = (function () {
                                 'state': 'RUNNING'
                             }
                         } else {
-                            uri = d.component.uri;
+                            uri = d.uri;
                             entity = {
                                 'revision': nf.Client.getRevision(d),
                                 'component': {
@@ -592,7 +582,7 @@ nf.Actions = (function () {
                                 'state': 'STOPPED'
                             };
                         } else {
-                            uri = d.component.uri;
+                            uri = d.uri;
                             entity = {
                                 'revision': nf.Client.getRevision(d),
                                 'component': {
@@ -643,7 +633,7 @@ nf.Actions = (function () {
                 };
 
                 // start transmitting
-                updateResource(d.component.uri, entity).done(function (response) {
+                updateResource(d.uri, entity).done(function (response) {
                     nf.RemoteProcessGroup.set(response);
                 });
             });
@@ -670,7 +660,7 @@ nf.Actions = (function () {
                     }
                 };
 
-                updateResource(d.component.uri, entity).done(function (response) {
+                updateResource(d.uri, entity).done(function (response) {
                     nf.RemoteProcessGroup.set(response);
                 });
             });
@@ -702,16 +692,27 @@ nf.Actions = (function () {
             }
         },
 
+        /**
+         * Opens the policy management page for the selected component.
+         *
+         * @param selection
+         */
+        managePolicies: function(selection) {
+            if (selection.size() <= 1) {
+                nf.PolicyManagement.showComponentPolicy(selection);
+            }
+        },
+
         // Defines an action for showing component details (like configuration but read only).
         showDetails: function (selection) {
             if (selection.empty()) {
-                nf.ProcessGroupDetails.showConfiguration(nf.Canvas.getGroupId());
+                nf.ProcessGroupConfiguration.showConfiguration(nf.Canvas.getGroupId());
             } else if (selection.size() === 1) {
                 var selectionData = selection.datum();
                 if (nf.CanvasUtils.isProcessor(selection)) {
                     nf.ProcessorDetails.showDetails(nf.Canvas.getGroupId(), selectionData.id);
                 } else if (nf.CanvasUtils.isProcessGroup(selection)) {
-                    nf.ProcessGroupDetails.showConfiguration(selectionData.id);
+                    nf.ProcessGroupConfiguration.showConfiguration(selectionData.id);
                 } else if (nf.CanvasUtils.isRemoteProcessGroup(selection)) {
                     nf.RemoteProcessGroupDetails.showDetails(selection);
                 } else if (nf.CanvasUtils.isInputPort(selection) || nf.CanvasUtils.isOutputPort(selection)) {
@@ -794,7 +795,7 @@ nf.Actions = (function () {
 
                     $.ajax({
                         type: 'DELETE',
-                        url: selectionData.component.uri + '?' + $.param({
+                        url: selectionData.uri + '?' + $.param({
                             version: revision.version,
                             clientId: revision.clientId
                         }),
@@ -907,13 +908,12 @@ nf.Actions = (function () {
                         // remove existing labels
                         var progressBar = $('#drop-request-percent-complete');
                         progressBar.find('div.progress-label').remove();
+                        progressBar.find('md-progress-linear').remove();
 
                         // update the progress bar
                         var label = $('<div class="progress-label"></div>').text(percentComplete + '%');
-                        if (percentComplete > 0) {
-                            label.css('margin-top', '-19px');
-                        }
-                        progressBar.progressbar('value', percentComplete).append(label);
+                        (nf.ng.Bridge.injector.get('$compile')($('<md-progress-linear ng-cloak ng-value="' + percentComplete + '" class="md-hue-2" md-mode="determinate" aria-label="Drop request percent complete"></md-progress-linear>'))(nf.ng.Bridge.rootScope)).appendTo(progressBar);
+                        progressBar.append(label);
                     };
 
                     // update the button model of the drop request status dialog
@@ -1083,7 +1083,7 @@ nf.Actions = (function () {
             var processor = selection.datum();
 
             // view the state for the selected processor
-            nf.ComponentState.showState(processor.component, nf.CanvasUtils.supportsModification(selection));
+            nf.ComponentState.showState(processor, nf.CanvasUtils.isConfigurable(selection));
         },
 
         /**
@@ -1403,8 +1403,8 @@ nf.Actions = (function () {
             // determine the current max zIndex
             var maxZIndex = -1;
             $.each(nf.Connection.get(), function (_, otherConnection) {
-                if (connection.id !== otherConnection.id && otherConnection.component.zIndex > maxZIndex) {
-                    maxZIndex = otherConnection.component.zIndex;
+                if (connection.id !== otherConnection.id && otherConnection.zIndex > maxZIndex) {
+                    maxZIndex = otherConnection.zIndex;
                 }
             });
 
@@ -1425,7 +1425,7 @@ nf.Actions = (function () {
                 // update the edge in question
                 $.ajax({
                     type: 'PUT',
-                    url: connection.component.uri,
+                    url: connection.uri,
                     data: JSON.stringify(connectionEntity),
                     dataType: 'json',
                     contentType: 'application/json'

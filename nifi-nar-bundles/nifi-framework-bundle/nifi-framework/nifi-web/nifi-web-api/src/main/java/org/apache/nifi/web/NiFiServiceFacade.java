@@ -16,13 +16,8 @@
  */
 package org.apache.nifi.web;
 
-import java.util.Date;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-import java.util.function.Function;
-
+import org.apache.nifi.authorization.AuthorizeAccess;
+import org.apache.nifi.authorization.RequestAction;
 import org.apache.nifi.authorization.user.NiFiUser;
 import org.apache.nifi.controller.ScheduledState;
 import org.apache.nifi.controller.repository.claim.ContentDirection;
@@ -77,6 +72,7 @@ import org.apache.nifi.web.api.dto.status.RemoteProcessGroupStatusDTO;
 import org.apache.nifi.web.api.dto.status.StatusHistoryDTO;
 import org.apache.nifi.web.api.entity.AccessPolicyEntity;
 import org.apache.nifi.web.api.entity.ConnectionEntity;
+import org.apache.nifi.web.api.entity.ControllerBulletinsEntity;
 import org.apache.nifi.web.api.entity.ControllerConfigurationEntity;
 import org.apache.nifi.web.api.entity.ControllerServiceEntity;
 import org.apache.nifi.web.api.entity.ControllerServiceReferencingComponentsEntity;
@@ -97,6 +93,13 @@ import org.apache.nifi.web.api.entity.SnippetEntity;
 import org.apache.nifi.web.api.entity.TemplateEntity;
 import org.apache.nifi.web.api.entity.UserEntity;
 import org.apache.nifi.web.api.entity.UserGroupEntity;
+
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Defines the NiFiServiceFacade interface.
@@ -152,7 +155,7 @@ public interface NiFiServiceFacade {
     // ----------------------------------------
     // Controller methods
     // ----------------------------------------
-    ControllerDTO getController();
+    ControllerDTO getSiteToSiteDetails();
 
     /**
      * Searches the controller for the specified query string.
@@ -259,6 +262,13 @@ public interface NiFiServiceFacade {
     ControllerConfigurationEntity getControllerConfiguration();
 
     /**
+     * Gets the controller level bulletins.
+     *
+     * @return Controller level bulletins
+     */
+    ControllerBulletinsEntity getControllerBulletins();
+
+    /**
      * Gets the configuration for the flow.
      *
      * @return Flow configuration transfer object
@@ -273,14 +283,6 @@ public interface NiFiServiceFacade {
      * @return Controller configuration DTO
      */
     ControllerConfigurationEntity updateControllerConfiguration(Revision revision, ControllerConfigurationDTO controllerConfigurationDTO);
-
-    /**
-     * Creates a new archive of the flow configuration.
-     *
-     * @return snapshot
-     */
-    ProcessGroupEntity createArchive();
-
 
     /**
      * Returns the process group status.
@@ -1273,6 +1275,14 @@ public interface NiFiServiceFacade {
      * @return The access policy transfer object
      */
     AccessPolicyEntity getAccessPolicy(String accessPolicyId);
+
+    /**
+     * Gets the access policy for the specified action, resource type, and component id.
+     *
+     * @param resource resource
+     * @return access policy
+     */
+    AccessPolicyEntity getAccessPolicy(RequestAction requestAction, String resource);
 
     /**
      * Updates the specified access policy.
