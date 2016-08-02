@@ -17,7 +17,7 @@
 package org.apache.nifi.reporting.datadog.metrics;
 
 /**
- * The Metric names to send to Ambari.
+ * The Metric names to send to DataDog.
  */
 public interface MetricNames {
 
@@ -48,4 +48,27 @@ public interface MetricNames {
     String JVM_GC_RUNS = "jvm.gc.runs";
     String JVM_GC_TIME = "jvm.gc.time";
 
+    // Port status metrics
+    String INPUT_COUNT = "InputCount";
+    String INPUT_BYTES = "InputBytes";
+    String OUTPUT_COUNT = "OutputCount";
+    String OUTPUT_BYTES = "OutputBytes";
+
+    //Connection status metrics
+    String QUEUED_COUNT = "QueuedCount";
+    String QUEUED_BYTES = "QueuedBytes";
+
+    //Port status tags
+    String PORT_ID = "port-id";
+    String PORT_GROUP_ID = "port-group-id";
+    String PORT_NAME = "port-name";
+
+    //Connection status tags
+    String CONNECTION_ID = "connection-id";
+    String CONNECTION_GROUP_ID = "connection-group-id";
+    String CONNECTION_NAME = "connection-name";
+    String CONNECTION_SOURCE_ID = "connection-source-id";
+    String CONNECTION_SOURCE_NAME = "connection-source-name";
+    String CONNECTION_DESTINATION_ID = "connection-destination-id";
+    String CONNECTTION_DESTINATION_NAME = "connection-destination-name";
 }

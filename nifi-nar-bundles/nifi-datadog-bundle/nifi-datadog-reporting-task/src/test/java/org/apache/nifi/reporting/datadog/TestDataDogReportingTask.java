@@ -19,6 +19,7 @@ package org.apache.nifi.reporting.datadog;
 import com.codahale.metrics.Gauge;
 import com.codahale.metrics.MetricRegistry;
 import com.google.common.base.Optional;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.AtomicDouble;
 import com.yammer.metrics.core.VirtualMachineMetrics;
 import org.apache.nifi.controller.ConfigurationContext;
@@ -41,6 +42,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Logger;
 
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.atLeast;
@@ -54,14 +56,13 @@ public class TestDataDogReportingTask {
     private ConcurrentHashMap<String, AtomicDouble> metricsMap;
     private MetricRegistry metricRegistry;
     private MetricsService metricsService;
-    private String reportingPeriod = "10";
     private String env = "dev";
     private String prefix = "nifi";
     private ReportingContext context;
     private ReportingInitializationContext initContext;
     private ConfigurationContext configurationContext;
     private volatile VirtualMachineMetrics virtualMachineMetrics;
-    private ComponentLog logger;
+    private Logger logger;
 
     @Before
     public void setup() {
@@ -86,10 +87,10 @@ public class TestDataDogReportingTask {
         Mockito.when(eventAccess.getControllerStatus()).thenReturn(status);
         Mockito.when(context.getEventAccess()).thenReturn(eventAccess);
 
-        logger = Mockito.mock(ComponentLog.class);
+        logger = Mockito.mock(Logger.class);
         initContext = Mockito.mock(ReportingInitializationContext.class);
         Mockito.when(initContext.getIdentifier()).thenReturn(UUID.randomUUID().toString());
-        Mockito.when(initContext.getLogger()).thenReturn(logger);
+        //Mockito.when(initContext.getLogger()).thenReturn(logger);
         metricsMap = new ConcurrentHashMap<>();
         metricRegistry = Mockito.mock(MetricRegistry.class);
         virtualMachineMetrics = VirtualMachineMetrics.getInstance();
@@ -114,11 +115,12 @@ public class TestDataDogReportingTask {
     @Test
     public void testUpdateMetricsProcessor() throws InitializationException, IOException {
         MetricsService ms = new MetricsService();
-        Map<String, String> processorMetrics = ms.getProcessorMetrics(procStatus);
+        Map<String, Double> processorMetrics = ms.getProcessorMetrics(procStatus);
+        Map<String, String> tagsMap = ImmutableMap.of("env", "test");
         DataDogReportingTask dataDogReportingTask = new TestableDataDogReportingTask();
         dataDogReportingTask.initialize(initContext);
         dataDogReportingTask.setup(configurationContext);
-        dataDogReportingTask.updateMetrics(processorMetrics, Optional.of("sampleProcessor"));
+        dataDogReportingTask.updateMetrics(processorMetrics, Optional.of("sampleProcessor"), tagsMap);
 
         verify(metricRegistry).register(eq("nifi.sampleProcessor.FlowFilesReceivedLast5Minutes"), Mockito.<Gauge>any());
         verify(metricRegistry).register(eq("nifi.sampleProcessor.ActiveThreads"), Mockito.<Gauge>any());
@@ -131,12 +133,14 @@ public class TestDataDogReportingTask {
     @Test
     public void testUpdateMetricsJVM() throws InitializationException, IOException {
         MetricsService ms = new MetricsService();
-        Map<String, String> processorMetrics = ms.getJVMMetrics(virtualMachineMetrics);
+        Map<String, Double> processorMetrics = ms.getJVMMetrics(virtualMachineMetrics);
+        Map<String, String> tagsMap = ImmutableMap.of("env", "test");
+
         DataDogReportingTask dataDogReportingTask = new TestableDataDogReportingTask();
         dataDogReportingTask.initialize(initContext);
         dataDogReportingTask.setup(configurationContext);
 
-        dataDogReportingTask.updateMetrics(processorMetrics, Optional.<String>absent());
+        dataDogReportingTask.updateMetrics(processorMetrics, Optional.<String>absent(), tagsMap);
         verify(metricRegistry).register(eq("nifi.flow.jvm.heap_usage"), Mockito.<Gauge>any());
         verify(metricRegistry).register(eq("nifi.flow.jvm.thread_count"), Mockito.<Gauge>any());
         verify(metricRegistry).register(eq("nifi.flow.jvm.thread_states.terminated"), Mockito.<Gauge>any());
@@ -206,6 +210,7 @@ public class TestDataDogReportingTask {
         protected ConcurrentHashMap<String, AtomicDouble> getMetricsMap() {
             return metricsMap;
         }
+
     }
 
 }

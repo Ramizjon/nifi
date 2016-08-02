@@ -58,7 +58,7 @@ public class TestMetricsService {
         processorStatuses.add(procStatus);
         status.setProcessorStatus(processorStatuses);
 
-        final Map<String, String> metrics = metricsService.getDataFlowMetrics(status);
+        final Map<String, Double> metrics = metricsService.getDataFlowMetrics(status);
 
         Assert.assertTrue(metrics.containsKey(MetricNames.FLOW_FILES_RECEIVED));
         Assert.assertTrue(metrics.containsKey(MetricNames.BYTES_RECEIVED));
@@ -79,7 +79,7 @@ public class TestMetricsService {
         processorStatuses.add(procStatus);
         status.setProcessorStatus(processorStatuses);
 
-        final Map<String, String> metrics = metricsService.getProcessorMetrics(procStatus);
+        final Map<String, Double> metrics = metricsService.getProcessorMetrics(procStatus);
 
         Assert.assertTrue(metrics.containsKey(MetricNames.BYTES_READ));
         Assert.assertTrue(metrics.containsKey(MetricNames.BYTES_WRITTEN));
@@ -93,7 +93,7 @@ public class TestMetricsService {
     public void testGetVirtualMachineMetrics() {
         final VirtualMachineMetrics virtualMachineMetrics = VirtualMachineMetrics.getInstance();
 
-        final Map<String, String> metrics = metricsService.getJVMMetrics(virtualMachineMetrics);
+        final Map<String, Double> metrics = metricsService.getJVMMetrics(virtualMachineMetrics);
         Assert.assertTrue(metrics.containsKey(MetricNames.JVM_UPTIME));
         Assert.assertTrue(metrics.containsKey(MetricNames.JVM_HEAP_USED));
         Assert.assertTrue(metrics.containsKey(MetricNames.JVM_HEAP_USAGE));

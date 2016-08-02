@@ -20,6 +20,8 @@ package org.apache.nifi.reporting.datadog;
 import com.codahale.metrics.Gauge;
 import com.codahale.metrics.MetricRegistry;
 import com.google.common.base.Optional;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.AtomicDouble;
 import com.yammer.metrics.core.VirtualMachineMetrics;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
@@ -28,27 +30,31 @@ import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.controller.ConfigurationContext;
+import org.apache.nifi.controller.status.ConnectionStatus;
+import org.apache.nifi.controller.status.PortStatus;
 import org.apache.nifi.controller.status.ProcessGroupStatus;
 import org.apache.nifi.controller.status.ProcessorStatus;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.reporting.AbstractReportingTask;
 import org.apache.nifi.reporting.ReportingContext;
 import org.apache.nifi.reporting.datadog.metrics.MetricsService;
 import org.coursera.metrics.datadog.DynamicTagsCallback;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+
+
 
 @Tags({"reporting", "datadog", "metrics"})
 @CapabilityDescription("Publishes metrics from NiFi to datadog")
 public class DataDogReportingTask extends AbstractReportingTask {
 
-    static final AllowableValue DATADOG_AGENT = new AllowableValue("DataDog Agent", "DataDog UDP Agent",
-            "Metrics will be sent via locally installed DataDog agent over UDP");
+    static final AllowableValue DATADOG_AGENT = new AllowableValue("DataDog Agent", "DataDog Agent",
+            "Metrics will be sent via locally installed DataDog agent. " +
+                    "DataDog agent needs to be installed manually before using this option");
 
     static final AllowableValue DATADOG_HTTP = new AllowableValue("Datadog HTTP", "Datadog HTTP",
             "Metrics will be sent via HTTP transport with no need of Agent installed. " +
@@ -59,7 +65,7 @@ public class DataDogReportingTask extends AbstractReportingTask {
             .description("Transport through which metrics will be sent to DataDog")
             .required(true)
             .allowableValues(DATADOG_AGENT, DATADOG_HTTP)
-            .defaultValue(DATADOG_AGENT.getValue())
+            .defaultValue(DATADOG_HTTP.getValue())
             .build();
 
     static final PropertyDescriptor API_KEY = new PropertyDescriptor.Builder()
@@ -74,7 +80,7 @@ public class DataDogReportingTask extends AbstractReportingTask {
             .name("Metrics prefix")
             .description("Prefix to be added before every metric")
             .required(true)
-            .expressionLanguageSupported(false)
+            .expressionLanguageSupported(true)
             .defaultValue("nifi")
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
@@ -84,7 +90,7 @@ public class DataDogReportingTask extends AbstractReportingTask {
             .description("Environment, dataflow is running in. " +
                     "This property will be included as metrics tag.")
             .required(true)
-            .expressionLanguageSupported(false)
+            .expressionLanguageSupported(true)
             .defaultValue("dev")
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
@@ -95,9 +101,10 @@ public class DataDogReportingTask extends AbstractReportingTask {
     private String metricsPrefix;
     private String environment;
     private String statusId;
-    private String apiKey;
     private ConcurrentHashMap<String, AtomicDouble> metricsMap;
+    private Map<String, String> defaultTags;
     private volatile VirtualMachineMetrics virtualMachineMetrics;
+    private Logger logger = LoggerFactory.getLogger(getClass().getName());
 
     @OnScheduled
     public void setup(final ConfigurationContext context) {
@@ -107,11 +114,9 @@ public class DataDogReportingTask extends AbstractReportingTask {
         metricsMap = getMetricsMap();
         metricsPrefix = METRICS_PREFIX.getDefaultValue();
         environment = ENVIRONMENT.getDefaultValue();
-        apiKey = API_KEY.getDefaultValue();
         virtualMachineMetrics = VirtualMachineMetrics.getInstance();
         ddMetricRegistryBuilder.setMetricRegistry(metricRegistry)
-                .setName("nifi_metrics")
-                .setTags(Arrays.asList("env", "dataflow_id"));
+                .setTags(metricsService.getAllTagsList());
     }
 
     @Override
@@ -127,50 +132,78 @@ public class DataDogReportingTask extends AbstractReportingTask {
     @Override
     public void onTrigger(ReportingContext context) {
         final ProcessGroupStatus status = context.getEventAccess().getControllerStatus();
-        metricsPrefix = context.getProperty(METRICS_PREFIX).getValue();
-        environment = context.getProperty(ENVIRONMENT).getValue();
-        apiKey = context.getProperty(API_KEY).getValue();
+
+        metricsPrefix = context.getProperty(METRICS_PREFIX).evaluateAttributeExpressions().getValue();
+        environment = context.getProperty(ENVIRONMENT).evaluateAttributeExpressions().getValue();
         statusId = status.getId();
+        defaultTags = ImmutableMap.of("env", environment, "dataflow_id", statusId);
         try {
             updateDataDogTransport(context);
         } catch (IOException e) {
             e.printStackTrace();
         }
-        final List<ProcessorStatus> processorStatuses = new ArrayList<>();
-        populateProcessorStatuses(status, processorStatuses);
-        for (final ProcessorStatus processorStatus : processorStatuses) {
-            updateMetrics(metricsService.getProcessorMetrics(processorStatus),
-                    Optional.of(processorStatus.getName()));
-        }
-        updateMetrics(metricsService.getJVMMetrics(virtualMachineMetrics),
-                Optional.<String>absent());
-        updateMetrics(metricsService.getDataFlowMetrics(status), Optional.<String>absent());
-        //report all metrics to DataDog
+        updateAllMetricGroups(status);
         ddMetricRegistryBuilder.getDatadogReporter().report();
     }
 
-    protected void updateMetrics(Map<String, String> metrics, Optional<String> processorName) {
-        for (Map.Entry<String, String> entry : metrics.entrySet()) {
+    protected void updateMetrics(Map<String, Double> metrics, Optional<String> processorName, Map<String, String> tags) {
+        for (Map.Entry<String, Double> entry : metrics.entrySet()) {
+            logger.info(entry.getKey() + ": " + entry.getValue());
             final String metricName = buildMetricName(processorName, entry.getKey());
             //if metric is not registered yet - register it
             if (!metricsMap.containsKey(metricName)) {
-                metricsMap.put(metricName, new AtomicDouble(Double.parseDouble(entry.getValue())));
-                metricRegistry.register(metricName, new MetricGauge(metricName, environment, statusId));
+                metricsMap.put(metricName, new AtomicDouble(entry.getValue()));
+                metricRegistry.register(metricName, new MetricGauge(metricName, tags));
             }
             //set real time value to metrics map
-            metricsMap.get(metricName).set(Double.parseDouble(entry.getValue()));
+            metricsMap.get(metricName).set(entry.getValue());
         }
     }
 
-    private class MetricGauge implements Gauge, DynamicTagsCallback {
-        String metricName;
-        String environment;
-        String dataflowId;
+    private void updateAllMetricGroups (ProcessGroupStatus processGroupStatus) {
+        final List<ProcessorStatus> processorStatuses = new ArrayList<>();
+        populateProcessorStatuses(processGroupStatus, processorStatuses);
+        for (final ProcessorStatus processorStatus : processorStatuses) {
+            updateMetrics(metricsService.getProcessorMetrics(processorStatus),
+                    Optional.of(processorStatus.getName()), defaultTags);
+        }
 
-        public MetricGauge(String metricName, String env, String dId) {
+        final List<ConnectionStatus> connectionStatuses = new ArrayList<>();
+        populateConnectionStatuses(processGroupStatus, connectionStatuses);
+        for (ConnectionStatus connectionStatus: connectionStatuses) {
+            Map<String, String> connectionStatusTags = new HashMap<>(defaultTags);
+            connectionStatusTags.putAll(metricsService.getConnectionStatusTags(connectionStatus));
+            updateMetrics(metricsService.getConnectionStatusMetrics(connectionStatus), Optional.<String>absent(), connectionStatusTags);
+        }
+
+        final List<PortStatus> inputPortStatuses = new ArrayList<>();
+        populateInputPortStatuses(processGroupStatus, inputPortStatuses);
+        for (PortStatus portStatus: inputPortStatuses) {
+            Map<String, String> portTags = new HashMap<>(defaultTags);
+            portTags.putAll(metricsService.getPortStatusTags(portStatus));
+            updateMetrics(metricsService.getPortStatusMetrics(portStatus), Optional.<String>absent(), portTags);
+        }
+
+        final List<PortStatus> outputPortStatuses = new ArrayList<>();
+        populateOutputPortStatuses(processGroupStatus, outputPortStatuses);
+        for (PortStatus portStatus: outputPortStatuses) {
+            Map<String, String> portTags = new HashMap<>(defaultTags);
+            portTags.putAll(metricsService.getPortStatusTags(portStatus));
+            updateMetrics(metricsService.getPortStatusMetrics(portStatus), Optional.<String>absent(), portTags);
+        }
+        
+        updateMetrics(metricsService.getJVMMetrics(virtualMachineMetrics),
+                Optional.<String>absent(), defaultTags);
+        updateMetrics(metricsService.getDataFlowMetrics(processGroupStatus), Optional.<String>absent(), defaultTags);
+    }
+
+    private class MetricGauge implements Gauge, DynamicTagsCallback {
+        private Map<String, String> tags;
+        private String metricName;
+
+        public MetricGauge(String metricName, Map<String, String> tagsMap) {
+            this.tags = tagsMap;
             this.metricName = metricName;
-            this.environment = env;
-            this.dataflowId = dId;
         }
 
         @Override
@@ -180,7 +213,11 @@ public class DataDogReportingTask extends AbstractReportingTask {
 
         @Override
         public List<String> getTags() {
-            return Arrays.asList("env:" + environment, "dataflow_id:" + dataflowId);
+            List<String> tagsList = Lists.newArrayList();
+            for (Map.Entry<String, String> entry : tags.entrySet()) {
+                tagsList.add(entry.getKey() + ":" + entry.getValue());
+            }
+            return tagsList;
         }
     }
 
@@ -198,6 +235,27 @@ public class DataDogReportingTask extends AbstractReportingTask {
         statuses.addAll(groupStatus.getProcessorStatus());
         for (final ProcessGroupStatus childGroupStatus : groupStatus.getProcessGroupStatus()) {
             populateProcessorStatuses(childGroupStatus, statuses);
+        }
+    }
+
+    private void populateConnectionStatuses(final ProcessGroupStatus groupStatus, final List<ConnectionStatus> statuses) {
+        statuses.addAll(groupStatus.getConnectionStatus());
+        for (final ProcessGroupStatus childGroupStatus : groupStatus.getProcessGroupStatus()) {
+            populateConnectionStatuses(childGroupStatus, statuses);
+        }
+    }
+
+    private void populateInputPortStatuses(final ProcessGroupStatus groupStatus, final List<PortStatus> statuses) {
+        statuses.addAll(groupStatus.getInputPortStatus());
+        for (final ProcessGroupStatus childGroupStatus : groupStatus.getProcessGroupStatus()) {
+            populateInputPortStatuses(childGroupStatus, statuses);
+        }
+    }
+
+    private void populateOutputPortStatuses(final ProcessGroupStatus groupStatus, final List<PortStatus> statuses) {
+        statuses.addAll(groupStatus.getOutputPortStatus());
+        for (final ProcessGroupStatus childGroupStatus : groupStatus.getProcessGroupStatus()) {
+            populateOutputPortStatuses(childGroupStatus, statuses);
         }
     }
 
