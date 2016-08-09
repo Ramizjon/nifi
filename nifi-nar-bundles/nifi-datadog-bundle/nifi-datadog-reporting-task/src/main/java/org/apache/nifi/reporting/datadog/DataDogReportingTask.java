@@ -191,7 +191,7 @@ public class DataDogReportingTask extends AbstractReportingTask {
             portTags.putAll(metricsService.getPortStatusTags(portStatus));
             updateMetrics(metricsService.getPortStatusMetrics(portStatus), Optional.<String>absent(), portTags);
         }
-        
+
         updateMetrics(metricsService.getJVMMetrics(virtualMachineMetrics),
                 Optional.<String>absent(), defaultTags);
         updateMetrics(metricsService.getDataFlowMetrics(processGroupStatus), Optional.<String>absent(), defaultTags);
